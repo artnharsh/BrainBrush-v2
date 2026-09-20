@@ -43,3 +43,4 @@ ansible/inventory.ini
 .DS_Store
 Thumbs.db
 devops/
+cmd.txt
