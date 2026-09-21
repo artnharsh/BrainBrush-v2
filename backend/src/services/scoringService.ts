@@ -1,7 +1,7 @@
 // backend/src/services/scoringService.ts
 import redis from "../config/redis";
 import { getGameState } from "./gameService"
-import { getTimeLeft } from "../utils/timer";
+import { getTimeLeftSync } from "../utils/timer";
 import { GameState } from "../types/gameTypes";
 
 interface GuessResult {
@@ -43,7 +43,8 @@ export const processGuess = async(roomCode: string, userId: string, guess: strin
     }
 
     // THE MATH: Calculate points based on speed
-    const timeLeft = getTimeLeft(roomCode);
+    // Using the synchronous cached value from the distributed timer
+    const timeLeft = getTimeLeftSync(roomCode);
     const points = Math.floor((timeLeft / 60) * 500) || 10; // At least 10 pts
 
     game.scores[userId] = (game.scores[userId] || 0) + points;

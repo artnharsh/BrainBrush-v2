@@ -1,0 +1,77 @@
+# ==========================================
+# INGRESS — External Traffic Entry Point
+# ==========================================
+# Routes external HTTP traffic to internal services.
+# Handles WebSocket upgrade for Socket.IO connections.
+#
+# DS Concept: Reverse Proxy, Location Transparency
+# External users hit a single URL; the Ingress routes them
+# to the correct internal service transparently.
+#
+# The nginx.ingress annotations configure:
+#   - WebSocket support (upgrade headers)
+#   - Sticky sessions (cookie-based affinity for WebSocket)
+#   - Connection timeouts for long-lived WS connections
+# ==========================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: brainbrush-ingress
+  labels:
+    app: brainbrush
+  annotations:
+    # WebSocket support
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "7200"
+    # Sticky sessions for WebSocket (cookie-based)
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/session-cookie-name: "brainbrush-sticky"
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "3600"
+    # Enable WebSocket upgrade
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          # Socket.IO / WebSocket traffic → Backend
+          - path: /socket.io
+            pathType: Prefix
+            backend:
+              service:
+                name: backend-service
+                port:
+                  number: 5000
+          # REST API traffic → Backend
+          - path: /auth
+            pathType: Prefix
+            backend:
+              service:
+                name: backend-service
+                port:
+                  number: 5000
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: backend-service
+                port:
+                  number: 5000
+          - path: /health
+            pathType: Prefix
+            backend:
+              service:
+                name: backend-service
+                port:
+                  number: 5000
+          # All other traffic → Frontend
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend-service
+                port:
+                  number: 80

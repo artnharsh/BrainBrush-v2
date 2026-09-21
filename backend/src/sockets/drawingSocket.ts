@@ -1,8 +1,34 @@
 import { Server } from "socket.io";
 import { AuthenticatedSocket, EraseStrokePayload, ClearCanvasPayload, CanvasSnapshotPayload, CanvasSegment } from "../types/socketTypes";
 import redis from "../config/redis";
+import { INSTANCE_ID } from "../config/env";
+import { lamportTick } from "../algorithms/lamportClock";
 
-export const activeDrawers = new Map<string, string>();
+// ==========================================
+// ACTIVE DRAWERS — MIGRATED TO REDIS
+// ==========================================
+// Old: in-memory Map<string, string> (roomCode → userId)
+//   → BREAKS: Server 2 doesn't know who the drawer is if the
+//     game was started on Server 1.
+//
+// New: Redis Hash "active:drawers"
+//   → All servers share the same drawer permission state.
+//   → Authorization check works correctly across instances.
+// ==========================================
+const DRAWERS_KEY = "active:drawers";
+
+// Helper functions to replace the old Map API
+export const setActiveDrawer = async (roomCode: string, userId: string): Promise<void> => {
+    await redis.hset(DRAWERS_KEY, roomCode, userId);
+};
+
+export const getActiveDrawer = async (roomCode: string): Promise<string | null> => {
+    return redis.hget(DRAWERS_KEY, roomCode);
+};
+
+export const deleteActiveDrawer = async (roomCode: string): Promise<void> => {
+    await redis.hdel(DRAWERS_KEY, roomCode);
+};
 
 export const drawingSocket = (io: Server, socket: AuthenticatedSocket): void => {
 
@@ -10,8 +36,26 @@ export const drawingSocket = (io: Server, socket: AuthenticatedSocket): void => 
     socket.on("draw_line_batch", async (data: { roomCode: string, segments: CanvasSegment[] }): Promise<void> => {
         try {
             if (!data.roomCode) return;
-            if (activeDrawers.get(data.roomCode) !== socket.user?.id) return;
-            socket.to(data.roomCode).emit("draw_line_batch", data.segments);
+
+            // Authorization: Only the current drawer can broadcast drawing events
+            const currentDrawer = await getActiveDrawer(data.roomCode);
+            if (currentDrawer !== socket.user?.id) return;
+
+            // ==========================================
+            // LAMPORT CLOCK — Stamp drawing events
+            // ==========================================
+            // Each batch of drawing segments gets a Lamport timestamp.
+            // This ensures correct causal ordering across servers:
+            //   If Player A on Server 1 draws before Player B on Server 2,
+            //   the Lamport timestamp guarantees clock(A) < clock(B)
+            //   even if the wall clocks are out of sync.
+            const timestamp = await lamportTick(data.roomCode);
+            const stampedSegments = data.segments.map(s => ({
+                ...s,
+                lamportTimestamp: timestamp
+            }));
+
+            socket.to(data.roomCode).emit("draw_line_batch", stampedSegments);
 
             // SERVER SIDE CACHE: Save to Redis for late joiners!
             if (data.segments && data.segments.length > 0) {
@@ -27,10 +71,13 @@ export const drawingSocket = (io: Server, socket: AuthenticatedSocket): void => 
     });
 
     // Relay erase stroke command from drawer to all other players
-    socket.on("erase_stroke", (data: EraseStrokePayload): void => {
+    socket.on("erase_stroke", async (data: EraseStrokePayload): Promise<void> => {
         try {
             if (!data.roomCode) return;
-            if (activeDrawers.get(data.roomCode) !== socket.user?.id) return;
+
+            const currentDrawer = await getActiveDrawer(data.roomCode);
+            if (currentDrawer !== socket.user?.id) return;
+
             socket.to(data.roomCode).emit("erase_stroke", data.strokeId);
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : "Unknown error";
@@ -43,7 +90,10 @@ export const drawingSocket = (io: Server, socket: AuthenticatedSocket): void => 
     socket.on("clear_canvas", async (roomCode: string): Promise<void> => {
         try {
             if (!roomCode) return;
-            if (activeDrawers.get(roomCode) !== socket.user?.id) return;
+
+            const currentDrawer = await getActiveDrawer(roomCode);
+            if (currentDrawer !== socket.user?.id) return;
+
             socket.to(roomCode).emit("clear_canvas", {});
             await redis.del(`room:${roomCode}:canvas`); // Wipe the cache
         } catch (error) {

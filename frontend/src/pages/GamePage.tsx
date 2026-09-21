@@ -8,6 +8,7 @@ import CanvasBoard from "../components/CanvasBoard";
 import ChatBox from "../components/ChatBox";
 import ScoreBoard from "../components/ScoreBoard"; 
 import Podium from "../components/Podium";
+import VoiceChat from "../components/VoiceChat";
 
 export default function GamePage() {
   useSocket(); 
@@ -47,9 +48,13 @@ export default function GamePage() {
           */
           <div className="flex flex-col lg:flex-row gap-4 w-full h-auto lg:h-[750px]">
             
-            {/* Column 1: Leaderboard (LOCKED to 280px wide on desktop) */}
-            <div className="lg:w-[280px] lg:shrink-0 h-[350px] lg:h-full">
-               <ScoreBoard />
+            {/* Column 1: Leaderboard + Voice Chat (LOCKED to 280px wide on desktop) */}
+            <div className="lg:w-[280px] lg:shrink-0 flex flex-col gap-3">
+               <div className="h-[350px] lg:flex-1">
+                 <ScoreBoard />
+               </div>
+               {/* Voice Chat — Push-to-Talk (WebRTC P2P) */}
+               <VoiceChat />
             </div>
             
             {/* Column 2: Canvas (Fills all remaining space in the middle) */}

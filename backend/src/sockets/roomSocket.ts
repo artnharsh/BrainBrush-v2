@@ -3,7 +3,8 @@ import { AuthenticatedSocket, SocketErrorPayload, StartGamePayload } from "../ty
 import { createRoomRedis, joinRoomRedis, leaveRoomRedis, getRoomSettings, setRoomSettings } from "../services/roomService";
 import { startGame, nextTurn, handlePlayerLeave, endGame } from "../services/gameService";
 import redis from "../config/redis";
-import { activeDrawers } from "./drawingSocket";
+import { setActiveDrawer, deleteActiveDrawer } from "./drawingSocket";
+import { INSTANCE_ID } from "../config/env";
 
 export const roomSocket = (io: Server, socket: AuthenticatedSocket): void => {
 
@@ -20,6 +21,7 @@ export const roomSocket = (io: Server, socket: AuthenticatedSocket): void => {
       socket.join(roomCode);
       socket.emit("room_created", { roomCode });
       io.to(roomCode).emit("player_list", { players, hostId: userId });
+      console.log(`[${INSTANCE_ID}] Room ${roomCode} created by ${userId}`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Failed to create room";
       console.error(`[roomSocket] Error creating room:`, error);
@@ -40,6 +42,7 @@ export const roomSocket = (io: Server, socket: AuthenticatedSocket): void => {
       const room = await joinRoomRedis(roomCode, userId);
       socket.join(roomCode);
       io.to(roomCode).emit("player_list", { players: room.players, hostId: room.host });
+      console.log(`[${INSTANCE_ID}] User ${userId} joined room ${roomCode}`);
 
       // THE RECONNECT FIX: Is there an active game?
       const gameStr = await redis.get(`game:${roomCode}`);
@@ -131,10 +134,13 @@ export const roomSocket = (io: Server, socket: AuthenticatedSocket): void => {
 
       // Initialize the game state in Redis with settings
       const gameState = await startGame(roomCode, players, settings);
-      activeDrawers.set(roomCode, gameState.drawer);
+
+      // Set the active drawer in Redis (distributed)
+      await setActiveDrawer(roomCode, gameState.drawer);
 
       // Broadcast the starting state to everyone
       io.to(roomCode).emit("game_started", gameState);
+      console.log(`[${INSTANCE_ID}] Game started in room ${roomCode}`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Failed to start game";
       console.error(`[roomSocket] Error starting game:`, error);
@@ -148,14 +154,14 @@ export const roomSocket = (io: Server, socket: AuthenticatedSocket): void => {
       const { game, isGameOver } = await nextTurn(roomCode);
 
       if (isGameOver) {
-        activeDrawers.delete(roomCode);
+        await deleteActiveDrawer(roomCode);
         const { winner, maxScore } = await endGame(roomCode, game);
         io.to(roomCode).emit("game_over", {
           reason: `Game Over! 🏆 The winner is ${winner} with ${maxScore} points!`,
           game
         });
       } else {
-        activeDrawers.set(roomCode, game.drawer);
+        await setActiveDrawer(roomCode, game.drawer);
         io.to(roomCode).emit("turn_updated", game);
       }
     } catch (error) {
@@ -174,10 +180,23 @@ export const roomSocket = (io: Server, socket: AuthenticatedSocket): void => {
       for (const roomCode of socket.rooms) {
         if (roomCode !== socket.id) {
 
-          // Remove from the lobby
+          // Remove from the lobby (may trigger Bully Election if host left)
           const room = await leaveRoomRedis(roomCode, userId);
           if (room?.players) {
             io.to(roomCode).emit("player_list", { players: room.players, hostId: room.host });
+
+            // If a Bully Election occurred, broadcast the result for demo/UI
+            if (room.electionPath) {
+              io.to(roomCode).emit("election_result", {
+                newHostId: room.host,
+                electionPath: room.electionPath
+              });
+              io.to(roomCode).emit("chat_message", {
+                sender: "System",
+                text: `🗳️ Bully Election: ${room.host} elected as new host`,
+                type: "success"
+              });
+            }
           }
 
           // Handle game logic if a game is running
@@ -188,7 +207,7 @@ export const roomSocket = (io: Server, socket: AuthenticatedSocket): void => {
             io.to(roomCode).emit("game_over", { reason: "Not enough players to continue." });
           } else if (wasDrawer) {
             // The drawer left, skip to next turn
-            activeDrawers.delete(roomCode);
+            await deleteActiveDrawer(roomCode);
             const { game, isGameOver } = await nextTurn(roomCode);
             if (isGameOver) {
               const { winner, maxScore } = await endGame(roomCode, game);
@@ -197,7 +216,7 @@ export const roomSocket = (io: Server, socket: AuthenticatedSocket): void => {
                 game
               });
             } else {
-              activeDrawers.set(roomCode, game.drawer);
+              await setActiveDrawer(roomCode, game.drawer);
               io.to(roomCode).emit("turn_updated", game);
               io.to(roomCode).emit("chat_message", {
                 sender: "System",

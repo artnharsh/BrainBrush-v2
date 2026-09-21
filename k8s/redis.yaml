@@ -1,0 +1,82 @@
+# ==========================================
+# REDIS DEPLOYMENT — In-Memory Data Store
+# ==========================================
+# Single Redis instance with persistent storage via PVC.
+# In production, this would be a Redis Sentinel or Cluster
+# for high availability.
+#
+# DS Concept: Centralized State Store, Data Persistence
+# ==========================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  labels:
+    app: brainbrush
+    component: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: brainbrush
+      component: redis
+  template:
+    metadata:
+      labels:
+        app: brainbrush
+        component: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+          volumeMounts:
+            - name: redis-storage
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+      volumes:
+        - name: redis-storage
+          persistentVolumeClaim:
+            claimName: redis-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+  labels:
+    app: brainbrush
+    component: redis
+spec:
+  type: ClusterIP
+  selector:
+    app: brainbrush
+    component: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+# ==========================================
+# PERSISTENT VOLUME CLAIM — Redis Data
+# ==========================================
+# Ensures Redis data survives pod restarts.
+#
+# DS Concept: Data Persistence, Docker Volumes
+# ==========================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

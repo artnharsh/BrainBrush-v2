@@ -1,0 +1,73 @@
+# ==========================================
+# MONGODB DEPLOYMENT — Persistent Data Store
+# ==========================================
+# Stores user profiles, game history, leaderboards.
+# Uses a PersistentVolumeClaim to survive pod restarts.
+#
+# DS Concept: Persistent Storage, Data Replication
+# ==========================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo
+  labels:
+    app: brainbrush
+    component: mongo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: brainbrush
+      component: mongo
+  template:
+    metadata:
+      labels:
+        app: brainbrush
+        component: mongo
+    spec:
+      containers:
+        - name: mongo
+          image: mongo:7
+          ports:
+            - containerPort: 27017
+          volumeMounts:
+            - name: mongo-storage
+              mountPath: /data/db
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+      volumes:
+        - name: mongo-storage
+          persistentVolumeClaim:
+            claimName: mongo-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo-service
+  labels:
+    app: brainbrush
+    component: mongo
+spec:
+  type: ClusterIP
+  selector:
+    app: brainbrush
+    component: mongo
+  ports:
+    - port: 27017
+      targetPort: 27017
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mongo-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi

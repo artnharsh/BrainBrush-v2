@@ -1,0 +1,109 @@
+# ==========================================
+# BACKEND DEPLOYMENT — 3 Replicas
+# ==========================================
+# Kubernetes creates 3 identical pods running the Node.js backend.
+# Each pod is a self-contained container with its own INSTANCE_ID.
+#
+# DS Concept: Horizontal Scaling, Process Replication
+# The ReplicaSet controller ensures exactly 3 pods are always running.
+# If a pod crashes, K8s automatically restarts it (Fault Tolerance).
+# ==========================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: brainbrush-backend
+  labels:
+    app: brainbrush
+    component: backend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: brainbrush
+      component: backend
+  template:
+    metadata:
+      labels:
+        app: brainbrush
+        component: backend
+    spec:
+      containers:
+        - name: backend
+          image: caliber001/brainbrush-backend:latest
+          ports:
+            - containerPort: 5000
+          env:
+            - name: PORT
+              value: "5000"
+            - name: INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name  # Pod name as unique instance ID
+            - name: REDIS_URL
+              value: "redis://redis-service:6379"
+            - name: MONGO_URI
+              value: "mongodb://mongo-service:27017/brainbrush"
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: brainbrush-secrets
+                  key: jwt-secret
+            - name: GOOGLE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: brainbrush-secrets
+                  key: google-client-id
+            - name: GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: brainbrush-secrets
+                  key: google-client-secret
+            - name: ALLOWED_ORIGINS
+              value: "http://localhost,https://brain-brush.vercel.app"
+          # Health checks for K8s to know when a pod is ready/alive
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+---
+# ==========================================
+# BACKEND SERVICE — Internal Load Balancer
+# ==========================================
+# ClusterIP service distributes traffic to backend pods internally.
+# The Ingress controller routes external traffic through this service.
+#
+# DS Concept: Service Discovery, Location Transparency
+# Pods come and go (scaling, crashes, updates), but the service
+# provides a stable internal DNS name (backend-service:5000).
+# ==========================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+  labels:
+    app: brainbrush
+    component: backend
+spec:
+  type: ClusterIP
+  selector:
+    app: brainbrush
+    component: backend
+  ports:
+    - port: 5000
+      targetPort: 5000
+      protocol: TCP

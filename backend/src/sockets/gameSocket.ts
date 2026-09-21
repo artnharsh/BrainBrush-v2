@@ -4,23 +4,41 @@ import { AuthenticatedSocket, RegisterNamePayload, ChooseWordPayload, GuessWordP
 import { processGuess } from "../services/scoringService";
 import { updateWord, nextTurn, endGame } from "../services/gameService";
 import { startRoundTimer, clearRoundTimer } from "../utils/timer";
-import { activeDrawers } from "./drawingSocket";
+import { setActiveDrawer, deleteActiveDrawer } from "./drawingSocket";
+import redis from "../config/redis";
 
-// IN-MEMORY CACHE FOR TEMPORARY NAMES
-export const temporaryNames = new Map<string, string>();
+// ==========================================
+// TEMPORARY NAMES — MIGRATED TO REDIS
+// ==========================================
+// Old: in-memory Map<string, string> (userId → displayName)
+//   → BREAKS: If Player A registers their name on Server 1,
+//     Server 2 doesn't know about it. Chat messages show
+//     "Guest-xxxx" instead of the real name.
+//
+// New: Redis Hash "player:names"
+//   → All servers read from the same name registry.
+//   → register_name writes once, readable from any instance.
+// ==========================================
+const NAMES_KEY = "player:names";
 
 export const gameSocket = (io: Server, socket: AuthenticatedSocket): void => {
 
     // Register/update player name when they connect
-    socket.on("register_name", (data: RegisterNamePayload): void => {
-        // Fallback to "Guest" if username is missing or default
-        const validName = data.username && data.username !== "Player" ? data.username : `Guest-${data.id.slice(-4)}`;
-        temporaryNames.set(data.id, validName);
+    socket.on("register_name", async (data: RegisterNamePayload): Promise<void> => {
+        try {
+            // Fallback to "Guest" if username is missing or default
+            const validName = data.username && data.username !== "Player" ? data.username : `Guest-${data.id.slice(-4)}`;
+            await redis.hset(NAMES_KEY, data.id, validName);
 
-        // Convert the Map to a normal Object so we can send it to the new user
-        socket.emit("name_dict_update", Object.fromEntries(temporaryNames));
-        // Broadcast only the single new name to everyone else (O(1) payload)
-        socket.broadcast.emit("player_name_updated", { id: data.id, name: validName });
+            // Send the FULL name dictionary to the new user
+            const allNames = await redis.hgetall(NAMES_KEY);
+            socket.emit("name_dict_update", allNames);
+
+            // Broadcast only the single new name to everyone else (O(1) payload)
+            socket.broadcast.emit("player_name_updated", { id: data.id, name: validName });
+        } catch (error) {
+            console.error(`[gameSocket] Error registering name:`, error);
+        }
     });
 
     // Drawer selects a word
@@ -53,8 +71,8 @@ export const gameSocket = (io: Server, socket: AuthenticatedSocket): void => {
             const userId = socket.user?.id;
             if (!userId) return;
 
-            // Keep cache updated, fallback to ID if no name provided
-            const senderName = temporaryNames.get(userId) || `Guest-${userId.slice(-4)}`;
+            // Fetch name from Redis instead of in-memory Map
+            const senderName = await redis.hget(NAMES_KEY, userId) || `Guest-${userId.slice(-4)}`;
 
             const result = await processGuess(data.roomCode, userId, data.guess);
 
@@ -85,14 +103,14 @@ export const gameSocket = (io: Server, socket: AuthenticatedSocket): void => {
 
                     const { game, isGameOver } = await nextTurn(data.roomCode);
                     if (isGameOver) {
-                        activeDrawers.delete(data.roomCode);
+                        await deleteActiveDrawer(data.roomCode);
                         const { winner, maxScore } = await endGame(data.roomCode, game);
                         io.to(data.roomCode).emit("game_over", {
                             reason: `Game Over! 🏆 The winner is ${winner} with ${maxScore} points!`,
                             game
                         });
                     } else {
-                        activeDrawers.set(data.roomCode, game.drawer);
+                        await setActiveDrawer(data.roomCode, game.drawer);
                         io.to(data.roomCode).emit("turn_updated", game);
                     }
                 }
@@ -120,11 +138,14 @@ export const gameSocket = (io: Server, socket: AuthenticatedSocket): void => {
         io.to(data.targetSocketId).emit("receive_canvas_snapshot", { segments: data.segments });
     });
 
-    // Clean up temporary names on disconnect to prevent memory leaks
-    socket.on("disconnect", () => {
-        if (temporaryNames.has(socket.id)) {
-            temporaryNames.delete(socket.id);
-            // No need to broadcast deletions to save bandwidth, UI falls back to ID gracefully
+    // Clean up temporary names on disconnect
+    socket.on("disconnect", async () => {
+        const userId = socket.user?.id;
+        if (userId) {
+            // Note: We don't delete from Redis on disconnect because
+            // the player might reconnect. Names auto-expire with room cleanup.
+            // This is a deliberate choice — stale names in Redis are harmless
+            // (they're just strings) and save a roundtrip on reconnect.
         }
     });
 };

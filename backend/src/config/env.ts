@@ -16,3 +16,11 @@ export const JWT_SECRET = process.env.JWT_SECRET as string;
 export const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "http://localhost:5173,http://localhost:80")
   .split(",")
   .map((origin) => origin.trim());
+
+// ==========================================
+// INSTANCE IDENTITY (for Distributed Systems)
+// Each server instance gets a unique ID so we can trace
+// which instance handles which request in a multi-server setup.
+// Set via INSTANCE_ID env var or auto-generated from PID + random.
+// ==========================================
+export const INSTANCE_ID = process.env.INSTANCE_ID || `node-${process.pid}-${Math.random().toString(36).slice(2, 6)}`;

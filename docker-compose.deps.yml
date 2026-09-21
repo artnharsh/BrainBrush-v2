@@ -1,0 +1,12 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: brainbrush-redis-local
+    ports:
+      - "6379:6379"
+
+  mongo:
+    image: mongo:7
+    container_name: brainbrush-mongo-local
+    ports:
+      - "27017:27017"

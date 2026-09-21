@@ -1,10 +1,12 @@
 import { Server } from "socket.io";
 import jwt, { JwtPayload } from "jsonwebtoken";
-import { JWT_SECRET } from "../config/env";
+import { JWT_SECRET, INSTANCE_ID } from "../config/env";
 import { AuthenticatedSocket, AuthenticatedUser } from "../types/socketTypes";
 import { roomSocket } from "./roomSocket";
 import { drawingSocket } from "./drawingSocket";
 import { gameSocket } from "./gameSocket";
+import { voiceSocket } from "./voiceSocket";
+import redis from "../config/redis";
 
 interface TokenPayload extends JwtPayload {
   id: string;
@@ -13,11 +15,21 @@ interface TokenPayload extends JwtPayload {
   name?: string;
 }
 
-export const initSocket = (io: Server): void => {
-  // Track active connections by userId to prevent duplicate sessions
-  const activeSessions = new Map<string, string>(); // userId -> socketId
+// ==========================================
+// REDIS KEY SCHEME FOR ACTIVE SESSIONS
+// ==========================================
+// Old: in-memory Map<string, string> (userId → socketId)
+//   → BREAKS with multiple servers: Server 2 doesn't know
+//     about sessions tracked on Server 1.
+//
+// New: Redis Hash "active:sessions"
+//   → ALL servers read/write from the same Redis store.
+//   → Duplicate session detection works across instances.
+// ==========================================
+const SESSIONS_KEY = "active:sessions";
 
-  io.use((socket: AuthenticatedSocket, next) => {
+export const initSocket = (io: Server): void => {
+  io.use(async (socket: AuthenticatedSocket, next) => {
     try {
       const token = socket.handshake.auth.token;
 
@@ -47,39 +59,60 @@ export const initSocket = (io: Server): void => {
     }
   });
 
-  io.on("connection", (socket: AuthenticatedSocket) => {
+  io.on("connection", async (socket: AuthenticatedSocket) => {
     const userId = socket.user?.id;
-    console.log("User connected:", userId);
+    console.log(`[${INSTANCE_ID}] User connected: ${userId} (socket: ${socket.id})`);
 
-    // Duplicate session detection: kick the old connection
-    if (userId && activeSessions.has(userId)) {
-      const oldSocketId = activeSessions.get(userId)!;
-      const oldSocket = io.sockets.sockets.get(oldSocketId);
-
-      if (oldSocket) {
-        // Notify the old tab/device before disconnecting it
-        oldSocket.emit("session_conflict", {
-          message: "Your account was logged in from another device. You have been disconnected."
-        });
-        oldSocket.disconnect(true);
-      }
-    }
-
-    // Register this socket as the active session
+    // ==========================================
+    // DISTRIBUTED DUPLICATE SESSION DETECTION
+    // ==========================================
+    // Check Redis for an existing session for this userId.
+    // If found, disconnect the old socket (even if it's on a different server).
     if (userId) {
-      activeSessions.set(userId, socket.id);
+      const oldSocketId = await redis.hget(SESSIONS_KEY, userId);
+
+      if (oldSocketId) {
+        // Try to find the old socket on THIS instance
+        const oldSocket = io.sockets.sockets.get(oldSocketId);
+
+        if (oldSocket) {
+          // The old socket is on THIS server — disconnect it directly
+          oldSocket.emit("session_conflict", {
+            message: "Your account was logged in from another device. You have been disconnected."
+          });
+          oldSocket.disconnect(true);
+        } else {
+          // The old socket is on ANOTHER server instance.
+          // Use Socket.IO's Redis Adapter to send a disconnect command
+          // across the cluster via the server-side "remote disconnect" API.
+          const remoteSocket = await io.in(oldSocketId).fetchSockets();
+          for (const rs of remoteSocket) {
+            rs.emit("session_conflict", {
+              message: "Your account was logged in from another device. You have been disconnected."
+            });
+            rs.disconnect(true);
+          }
+        }
+      }
+
+      // Register this socket as the active session in Redis
+      await redis.hset(SESSIONS_KEY, userId, socket.id);
     }
 
     roomSocket(io, socket);
     drawingSocket(io, socket);
     gameSocket(io, socket);
+    voiceSocket(io, socket);
 
-    socket.on("disconnect", () => {
-      console.log("User disconnected:", userId);
-      // Only remove from activeSessions if THIS socket is still the active one
+    socket.on("disconnect", async () => {
+      console.log(`[${INSTANCE_ID}] User disconnected: ${userId}`);
+      // Only remove from Redis if THIS socket is still the active one
       // (prevents a race where the new socket registers, then the old one disconnects)
-      if (userId && activeSessions.get(userId) === socket.id) {
-        activeSessions.delete(userId);
+      if (userId) {
+        const currentSocketId = await redis.hget(SESSIONS_KEY, userId);
+        if (currentSocketId === socket.id) {
+          await redis.hdel(SESSIONS_KEY, userId);
+        }
       }
     });
   });

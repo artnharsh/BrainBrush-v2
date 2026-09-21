@@ -77,6 +77,7 @@ export interface CanvasSegment {
     endY: number;
     color: string;
     lineWidth: number;
+    lamportTimestamp?: number; // Logical clock for event ordering across distributed servers
 }
 
 export interface DrawLinePayload {

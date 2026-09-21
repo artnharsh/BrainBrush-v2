@@ -1,4 +1,5 @@
 import redis from "../config/redis";
+import { assignPlayerPriority, removePlayerPriority, runBullyElection } from "../algorithms/bullyElection";
 
 interface RoomCreationResult {
   roomCode: string;
@@ -8,6 +9,7 @@ interface RoomCreationResult {
 interface RoomInfo {
   players: string[];
   host?: string | null;
+  electionPath?: string[]; // For demo: shows the election cascade
 }
 
 export interface GameSettingsConfig {
@@ -30,6 +32,9 @@ export const createRoomRedis = async (userId: string): Promise<RoomCreationResul
   await redis.set(`room:${roomCode}:host`, userId);
   await redis.sadd(`room:${roomCode}:players`, userId);
 
+  // Assign priority for Bully Election (host gets highest priority = first joiner)
+  await assignPlayerPriority(roomCode, userId);
+
   // Expire BOTH keys so nothing is left behind!
   await redis.expire(`room:${roomCode}:host`, ROOM_TTL);
   await redis.expire(`room:${roomCode}:players`, ROOM_TTL);
@@ -45,6 +50,9 @@ export const joinRoomRedis = async (roomCode: string, userId: string): Promise<R
 
   await redis.sadd(`room:${roomCode}:players`, userId);
 
+  // Assign priority for Bully Election (later joiners get lower priority)
+  await assignPlayerPriority(roomCode, userId);
+
   const players = await redis.smembers(`room:${roomCode}:players`);
   const host = await redis.get(`room:${roomCode}:host`);
 
@@ -56,26 +64,49 @@ export const leaveRoomRedis = async (roomCode: string, userId: string): Promise<
   // Remove the user
   await redis.srem(`room:${roomCode}:players`, userId);
 
+  // Remove their election priority
+  await removePlayerPriority(roomCode, userId);
+
   const players = await redis.smembers(`room:${roomCode}:players`);
 
   // If room is empty, clean it up early
   if (players.length === 0) {
     await redis.del(`room:${roomCode}:players`);
     await redis.del(`room:${roomCode}:host`);
-  } else {
-    // The room is still alive. Did the Host just leave?
-    const currentHost = await redis.get(`room:${roomCode}:host`);
+    return { players: [], host: null };
+  }
 
-    if (currentHost === userId) {
-      // Pass the crown to the next person in line
-      const newHost = players[0];
-      await redis.set(`room:${roomCode}:host`, newHost);
-      console.log(`Host transferred to ${newHost} for room ${roomCode}`);
+  // The room is still alive. Did the Host just leave?
+  const currentHost = await redis.get(`room:${roomCode}:host`);
+  let electionPath: string[] | undefined;
+
+  if (currentHost === userId) {
+    // ==========================================
+    // BULLY ELECTION — Host left, elect a new one!
+    // ==========================================
+    // Instead of arbitrarily picking players[0], we run
+    // the Bully Algorithm to deterministically elect the
+    // highest-priority remaining player as the new host.
+    //
+    // This is a core distributed systems concept:
+    // When a coordinator fails, the remaining nodes must
+    // agree on a new coordinator through an election protocol.
+    // ==========================================
+    try {
+      const electionResult = await runBullyElection(roomCode);
+      await redis.set(`room:${roomCode}:host`, electionResult.newHostId);
+      electionPath = electionResult.electionPath;
+      console.log(`[BULLY] Host transferred to ${electionResult.newHostId} for room ${roomCode}`);
+    } catch (error) {
+      // Fallback: if election fails, pick first available player
+      const fallbackHost = players[0];
+      await redis.set(`room:${roomCode}:host`, fallbackHost);
+      console.log(`[BULLY] Election failed, fallback host: ${fallbackHost}`);
     }
   }
 
   const host = await redis.get(`room:${roomCode}:host`);
-  return { players, host };
+  return { players, host, electionPath };
 };
 
 export const getRoomRedis = async (roomCode: string): Promise<RoomCreationResult> => {
