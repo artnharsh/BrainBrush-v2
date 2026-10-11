@@ -10,9 +10,12 @@
 
 ## The Problem: Event Ordering Across Servers
 
-With 3 backend server instances, drawing events from different players arrive at different servers. Their wall clocks might not be synchronized.
+With 3 backend server instances, drawing events from different players arrive at different servers. Their physical wall clocks might not be synchronized.
 
-### Example: The Eraser Problem
+### The Textbook Motivation: The Eraser Problem (Multi-User Whiteboard)
+
+In classical distributed systems literature (and open collaborative whiteboards like Figma or Miro), multiple users can draw and erase concurrently:
+
 ```
 Time →
 
@@ -23,12 +26,34 @@ Server 2 (Player B erases that line):
     t=999ms: erase_stroke {strokeId: "red-line-1"}
 ```
 
-Player B's erase arrives **1ms earlier** by wall clock, but it was **caused by** seeing Player A's line. Without logical ordering, a client might apply the erase before the line exists.
+Player B's erase arrives **1ms earlier** by wall clock because Server 2's clock drifts behind Server 1. However, Player B erased the line **only after seeing Player A draw it** (a causal relationship). Without logical ordering, a receiver sorting by wall-clock time would apply the erase before the line exists.
+
+### How This Applies to BrainBrush (Single-Drawer Turn-Based Model)
+
+In BrainBrush, the game enforces that **only one player is the active drawer per turn** (enforced via Redis `active:drawers` and server authorization). Guessers cannot draw or erase during another player's turn.
+
+So why do we still need Lamport Logical Clocks in BrainBrush?
+
+1. **Turn Handoffs Across Different Servers (Round Transitions)**:
+   - **Round 1:** Player A draws while connected to **Server 1**.
+   - **Round 2:** Player B becomes the new drawer, connected to **Server 2**.
+   - If Server 1's physical clock is fast (e.g., `12:00:00.200`) and Server 2's clock is slow (e.g., `12:00:00.050`), Player B's strokes in Round 2 would carry physical timestamps *earlier* than Player A's strokes in Round 1.
+   - When spectators or late joiners replay game history, Round 2 would incorrectly render before Round 1.
+   - **Lamport's solution:** Server 2 receives Server 1's events and merges the clock (`max(local, remote) + 1`). Player B's events in Round 2 are guaranteed to have a higher logical timestamp than Player A's ($C(A) < C(B)$).
+
+2. **Out-of-Order Packet Delivery (Draw vs. Erase/Clear by the Same Drawer)**:
+   - The active drawer emits hundreds of segments per second (`draw_line_batch`), followed by `erase_stroke` or `clear_canvas`.
+   - Across 3 backend instances and Redis Pub/Sub, network jitter or socket buffering can cause packets to arrive at client browsers out of order.
+   - If an `erase_stroke` packet arrives before the corresponding `draw_line_batch` packet, the client would fail to erase the stroke and then draw it afterwards (leaving a "ghost line").
+   - Logical timestamps allow clients to buffer and replay events in exact causal sequence.
+
+3. **Deterministic Canvas State Reconstruction (Late Joiners & Cache)**:
+   - When a player reconnects and requests `request_canvas_sync`, all recorded events in Redis follow a monotonically increasing, unambiguous sequence.
 
 ### Why Physical Clocks Don't Work
-- Server clocks drift (NTP synchronization is ~10-100ms accuracy)
+- Server clocks drift (NTP synchronization only achieves ~10-100ms accuracy)
 - Network latency varies (5ms to 200ms+)
-- Two events at "the same time" on different servers have no natural ordering
+- Two events on different servers have no natural physical ordering
 - Clock skew can reverse the apparent order of causally related events
 
 ---
@@ -113,12 +138,13 @@ socket.on("draw_line_batch", async (data) => {
 
 ## How It Works — Step by Step
 
-### Scenario: Three Players on Three Servers
+### Scenario: Three Players Across Sequential Rounds (Three Servers)
 
 ```
 Server 1 (Player A)       Server 2 (Player B)       Server 3 (Player C)
 Clock: 0                  Clock: 0                  Clock: 0
 
+[Round 1: Player A draws]
 Player A draws:
   tick() → Clock: 1
   emit segments with
@@ -130,6 +156,7 @@ Player A draws:
                                                     Receives A's drawing:
                                                     max(0, 1) + 1 = Clock: 2
 
+[Round 2: Turn passes to Player B]
 Player B draws:
                           tick() → Clock: 3
                           emit segments with
@@ -141,6 +168,7 @@ Player B draws:
                                                     Receives B's drawing:
                                                     max(2, 3) + 1 = Clock: 4
 
+[Round 3: Turn passes to Player C]
 Player C draws:
                                                     tick() → Clock: 5
                                                     emit segments with
