@@ -7,11 +7,13 @@ import redis from "../config/redis";
 // distributed system where nodes don't share a physical clock.
 //
 // THE PROBLEM:
-// In BrainBrush with 3 server instances, Player A draws a line
-// on Server 1, and Player B draws a line on Server 2. Their
-// wall clocks might differ. Without logical ordering, strokes
-// can appear in the wrong order, or an eraser might be applied
-// before the line it's erasing arrives.
+// Across 3 backend server instances, physical wall clocks drift (NTP skew).
+// 1. Turn transitions: Player A draws in Round 1 on Server 1, and Player B
+//    draws in Round 2 on Server 2. Clock skew can cause Round 2's strokes
+//    to appear with earlier physical timestamps than Round 1's.
+// 2. Out-of-order delivery: Rapid drawing/erasing can arrive out of order
+//    over the network.
+// Lamport clocks guarantee causal event ordering without synchronized clocks.
 //
 // THE SOLUTION — Lamport's Happened-Before Relation:
 // Each event gets a logical timestamp following these rules:
