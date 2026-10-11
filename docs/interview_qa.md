@@ -298,3 +298,27 @@ I would **never** expose my Node.js port (e.g., 3000), MongoDB port (27017), or 
 Exposing a database port publicly is the number one cause of cloud data breaches. Instead, I run a reverse proxy like Nginx that listens on the public ports 80/443. When a user sends a request, Nginx securely routes that traffic internally to the Node.js container on port 3000. 
 
 Meanwhile, MongoDB and Redis are completely isolated on a private virtual network. They are configured to reject all external traffic and will *only* accept internal connections coming directly from the Node.js backend.
+
+---
+
+## Q21: Lamport Logical Clocks in a Single-Drawer Game
+**Question:** In BrainBrush, only one player is permitted to draw at a time, and guessers cannot interact with the canvas. Why do you need Lamport Logical Clocks if there are no concurrent drawers?
+
+**Answer:**
+In open collaborative tools (like Miro or Figma), Lamport clocks primarily resolve *concurrent edits* (e.g., User B erasing User A's stroke at the same time). While BrainBrush locks canvas access to one active drawer per turn, we run across **3 distributed backend servers**, which introduces three critical distributed timing problems that physical wall clocks cannot solve:
+
+1. **Cross-Server Turn Transitions (Round 1 → Round 2):**
+   - Player A draws on Server 1 during Round 1.
+   - When the round ends, Player B becomes the drawer on Server 2 during Round 2.
+   - If Server 1's physical hardware clock is slightly ahead of Server 2's (due to physical clock skew and NTP drift), Player B's strokes in Round 2 would receive physical timestamps *earlier* than Player A's strokes in Round 1.
+   - When late joiners or spectators load or replay the canvas history, Round 2 would render out of order.
+   - With Lamport Clocks, Server 2 updates its logical clock using `clock = max(local_clock, received_timestamp) + 1` upon receiving Server 1's broadcast. This guarantees that all Round 2 events have a higher logical timestamp than Round 1 ($C(\text{Round 1}) < C(\text{Round 2})$).
+
+2. **Network Jitter & Out-of-Order Delivery:**
+   - A single drawer emits events rapidly (e.g., `draw_line_batch` followed by `erase_stroke` or `clear_canvas`).
+   - Packets routed across multiple load-balanced servers and Redis Pub/Sub can experience network jitter and arrive out of order at client sockets.
+   - Without logical sequence numbers, a client could receive an `erase` before the corresponding `draw`, causing a ghost line to persist on screen. Lamport timestamps give clients a deterministic order to buffer and apply canvas operations.
+
+3. **Deterministic Canvas Reconstruction:**
+   - When a player reconnects and syncs canvas state from Redis, Lamport timestamps provide a globally consistent causal order to reconstruct the game board accurately.
+
