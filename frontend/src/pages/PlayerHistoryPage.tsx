@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { useGameStore } from "../store/useGameStore";
 import axiosClient from "../api/axiosClient"; 
-import { Trophy, Users, Star, Hash, Calendar, ChevronDown, Gamepad2, AlertCircle, RefreshCcw } from "lucide-react";
+import { Trophy, Users, Star, Hash, Calendar, ChevronDown, Gamepad2, AlertCircle, RefreshCcw, ArrowLeft } from "lucide-react";
 
 interface GameRecord {
   id: string;
@@ -29,6 +30,7 @@ interface PlayerStats {
 }
 
 export default function PlayerHistoryPage() {
+  const navigate = useNavigate();
   const user = useGameStore((state) => state.user);
   const isAuthenticated = useGameStore((state) => state.isAuthenticated);
   const [history, setHistory] = useState<GameRecord[]>([]);
@@ -104,6 +106,23 @@ export default function PlayerHistoryPage() {
   return (
     <div className="min-h-screen bg-[#F0F0F0] p-6 font-sans text-black">
       <div className="max-w-5xl mx-auto">
+
+        {/* Action Bar (Back to Lobby & Refresh) */}
+        <div className="flex justify-between items-center mb-6">
+          <button
+            onClick={() => navigate("/lobby")}
+            className="bg-white border-4 border-black px-4 py-2 font-black uppercase text-sm flex items-center gap-2 shadow-[4px_4px_0px_#000] hover:bg-yellow-300 transition-all active:translate-y-1 active:shadow-none cursor-pointer"
+          >
+            <ArrowLeft size={18} strokeWidth={3} /> Back to Lobby
+          </button>
+
+          <button
+            onClick={() => fetchHistory()}
+            className="bg-yellow-400 border-4 border-black px-4 py-2 font-black uppercase text-sm flex items-center gap-2 shadow-[4px_4px_0px_#000] hover:bg-yellow-300 transition-all active:translate-y-1 active:shadow-none cursor-pointer"
+          >
+            <RefreshCcw size={18} strokeWidth={3} /> Refresh Records
+          </button>
+        </div>
         
         {/* Header Section */}
         <header className="flex flex-col md:flex-row md:items-end justify-between mb-12 gap-6">

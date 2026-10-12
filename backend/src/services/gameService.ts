@@ -5,6 +5,7 @@ import { GameState } from "../types/gameTypes";
 import { getRandomWords } from "../utils/wordGenerator";
 import { getWordsByDifficultyAndCategory } from "../utils/wordLists";
 import { getRoomSettings, GameSettingsConfig } from "./roomService";
+import { invalidatePlayerCache } from "./playerService";
 
 const Game_TTL = 3600; // 1 hour in seconds
 
@@ -245,5 +246,12 @@ export const endGame = async(roomCode: string, finalGameState: GameState): Promi
     `room:${roomCode}:guessed`,
     `room:${roomCode}:canvas`
   );
+
+  // 🔄 CACHE INVALIDATION: Invalidate cached history & stats for all players
+  // so their history page displays the latest match immediately
+  for (const playerId of finalGameState.players) {
+    await invalidatePlayerCache(playerId);
+  }
+
   return { winner: userMap[winnerId] || "Unknown", maxScore };
 };

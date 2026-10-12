@@ -1,0 +1,78 @@
+events {
+    worker_connections 4096;
+}
+
+http {
+    upstream backend_round_robin {
+        server backend-1:5000;
+        server backend-2:5000;
+        server backend-3:5000;
+    }
+
+    upstream backend_servers {
+        ip_hash;
+        server backend-1:5000;
+        server backend-2:5000;
+        server backend-3:5000;
+    }
+
+    limit_req_zone $binary_remote_addr zone=api:10m rate=100r/s;
+
+    server {
+        listen 80;
+        server_name _;
+
+        location /socket.io/ {
+            proxy_pass http://backend_servers;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            add_header X-Instance-ID $upstream_addr always;
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
+            proxy_buffering off;
+        }
+
+        # React Frontend Route: Auth Success Callback
+        location /auth/success {
+            proxy_pass http://frontend:80;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        location /auth/ {
+            limit_req zone=api burst=20 nodelay;
+            proxy_pass http://backend_servers;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        location /api/ {
+            limit_req zone=api burst=50 nodelay;
+            proxy_pass http://backend_servers;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        location /health {
+            proxy_pass http://backend_round_robin;
+            proxy_set_header Host $host;
+        }
+
+        location / {
+            proxy_pass http://frontend:80;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+        }
+    }
+}

@@ -19,6 +19,7 @@ router.get("/history", protect as any, async (req: any, res: Response) => {
     const limit = parseInt(req.query.limit || "20");
 
     const history = await getPlayerGameHistory(userId, limit);
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
     res.json({ success: true, data: history });
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Failed to fetch history";
@@ -38,6 +39,7 @@ router.get("/stats", protect as any, async (req: any, res: Response) => {
     }
 
     const stats = await getPlayerStats(userId);
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
     res.json({ success: true, data: stats });
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Failed to fetch stats";

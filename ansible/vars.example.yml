@@ -1,0 +1,23 @@
+# ==========================================
+# BRAINBRUSH — ANSIBLE DEPLOYMENT VARIABLES (EXAMPLE)
+# ==========================================
+# Copy this file to vars.yml and provide your real credentials:
+#   cp ansible/vars.example.yml ansible/vars.yml
+
+# Docker Hub Configuration
+docker_hub_user: "caliber001"
+docker_image_tag: "latest"
+
+# Database Configuration (External MongoDB Atlas)
+mongo_uri: "mongodb+srv://<username>:<password>@cluster.mongodb.net/BrainBrush"
+
+# Redis URL (External Redis e.g., Upstash)
+redis_url: "rediss://default:<password>@your-redis-instance.upstash.io:6379"
+
+# Security & OAuth Secrets
+jwt_secret: "supersecretjwtkey123"
+google_client_id: "your-client-id.apps.googleusercontent.com"
+google_client_secret: "your-client-secret"
+
+# Frontend URL defaults to the EC2 public IP with nip.io wildcard DNS
+frontend_url: "http://{{ ansible_host }}.nip.io"

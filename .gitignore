@@ -25,6 +25,7 @@ terraform/terraform.tfvars
 # ===========================================================================
 # Inventory contains server IPs — changes per environment
 ansible/inventory.ini
+ansible/vars.yml
 
 # Ansible retry files (generated on failure)
 *.retry

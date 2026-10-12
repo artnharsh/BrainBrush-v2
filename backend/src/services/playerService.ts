@@ -168,3 +168,19 @@ export const getPlayerStats = async (userId: string) => {
     throw new Error("Failed to fetch stats");
   }
 };
+
+/**
+ * Invalidate cached history and stats for a player
+ * Called when a game ends so players see up-to-date records immediately
+ */
+export const invalidatePlayerCache = async (userId: string): Promise<void> => {
+  try {
+    const keys = await redis.keys(`history:${userId}:*`);
+    keys.push(`stats:${userId}`);
+    if (keys.length > 0) {
+      await redis.del(...keys);
+    }
+  } catch (error) {
+    console.error(`Failed to invalidate cache for user ${userId}:`, error);
+  }
+};

@@ -1,13 +1,20 @@
 ---
-- name: Deploy BrainBrush Application
+- name: Deploy BrainBrush Scaled Application
   hosts: servers
-  become: true       # Need root for docker commands (first run before group takes effect)
+  become: true
+
+  vars_files:
+    - vars.yml
 
   vars:
     app_dir: /home/ubuntu/brainbrush
-    docker_hub_user: caliber001
-
-    docker_image_tag: "latest"
+    docker_hub_user: "{{ docker_hub_user | default('caliber001') }}"
+    docker_image_tag: "{{ docker_image_tag | default('latest') }}"
+    redis_url: "{{ redis_url | default('redis://redis:6379') }}"
+    jwt_secret: "{{ jwt_secret | default('supersecretjwtkey123') }}"
+    google_client_id: "{{ google_client_id | default('') }}"
+    google_client_secret: "{{ google_client_secret | default('') }}"
+    frontend_url: "{{ frontend_url | default('http://' ~ ansible_host ~ '.nip.io') }}"
 
   tasks:
     - name: Copy production Docker Compose file to server
@@ -18,18 +25,34 @@
         group: ubuntu
         mode: "0644"
 
+    - name: Copy Nginx config to server
+      ansible.builtin.template:
+        src: templates/nginx.conf.j2
+        dest: "{{ app_dir }}/nginx.conf"
+        owner: ubuntu
+        group: ubuntu
+        mode: "0644"
+
+    - name: Copy frontend Nginx config to server
+      ansible.builtin.copy:
+        src: ../frontend/nginx.conf
+        dest: "{{ app_dir }}/frontend-nginx.conf"
+        owner: ubuntu
+        group: ubuntu
+        mode: "0644"
+
     - name: Create .env file from template
       ansible.builtin.template:
         src: templates/.env.j2
         dest: "{{ app_dir }}/.env"
         owner: ubuntu
         group: ubuntu
-        mode: "0600"     # 🔒 Read/write only for owner — secrets should be protected!
+        mode: "0600"
 
     - name: Log in to Docker Hub
       ansible.builtin.command:
         cmd: "docker login -u {{ docker_hub_user }} -p {{ docker_hub_password }}"
-      no_log: true        # 🔒 Don't show this command's output (it contains the password!)
+      no_log: true
       changed_when: true
       when: docker_hub_password is defined
 
@@ -56,24 +79,39 @@
         cmd: docker compose up -d
         chdir: "{{ app_dir }}"
 
-    - name: Wait for backend to be ready
+    - name: Patch frontend API endpoints with actual server host
+      ansible.builtin.command:
+        cmd: docker exec brainbrush-frontend sh -c "sed -i -E 's|http://(brainbrush\\.harshxdev\\.tech\|[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+)(\\.nip\\.io)?|http://{{ ansible_host }}.nip.io|g' /usr/share/nginx/html/assets/*.js"
+      changed_when: true
+
+    - name: Wait for backend instances to be ready
       ansible.builtin.uri:
-        url: "http://localhost:5000"
-        status_code: [200, 404]    # Accept 404 too — root route might not exist
+        url: "http://localhost/health"
+        status_code: 200
         timeout: 5
       register: health_check
-      retries: 10                  # Try 10 times
-      delay: 5                     # Wait 5 seconds between retries
-      until: health_check.status is defined
+      retries: 20
+      delay: 5
+      until: health_check.status is defined and health_check.status == 200
       ignore_errors: true
+
+    - name: Check all containers are running
+      ansible.builtin.command:
+        cmd: docker ps --format "table {{'{{'}}.Names{{'}}'}}\t{{'{{'}}.Status{{'}}'}}"
+      register: docker_status
+      changed_when: false
 
     - name: Print deployment status
       ansible.builtin.debug:
         msg: |
-          ✅ BrainBrush deployed successfully!
+          ✅ BrainBrush SCALED deployment complete!
           🌐 Frontend: http://{{ ansible_host }}
-          🔌 Backend:  http://{{ ansible_host }}:5000
-          📦 Images:   {{ docker_hub_user }}/brainbrush-*:{{ docker_image_tag }}
+          🔌 Backend (3 instances behind Nginx LB):
+             - backend-1, backend-2, backend-3
+          📦 Images: {{ docker_hub_user }}/brainbrush-*:{{ docker_image_tag }}
+          
+          Running containers:
+          {{ docker_status.stdout }}
 
     - name: Remove unused Docker images
       ansible.builtin.command:
